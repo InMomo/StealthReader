@@ -41,32 +41,65 @@ DARK_STYLESHEET = """
 """
 
 
-# ================= 独立窗口：书籍选择器 =================
+# ================= 独立窗口：书籍选择器 (修复版) =================
 class BookSelector(QDialog):
-    def __init__(self, books, parent=None):
+    def __init__(self, main_window, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("📚 书架 (双击打开)")
+        self.main_window = main_window  # 持有主窗口引用，以便实时获取数据
+        self.setWindowTitle("📚 书架")
         self.resize(400, 500)
-        self.books = books
         self.selected_book = None
         self.setStyleSheet(DARK_STYLESHEET)
         self.initUI()
 
+        # 初始化时先加载一次当前有的数据
+        self.populate_list(self.main_window.books)
+
     def initUI(self):
         layout = QVBoxLayout()
+
+        # 顶部操作区
+        top_layout = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("🔍 搜索书名或作者...")
         self.search_input.textChanged.connect(self.filter_books)
-        layout.addWidget(self.search_input)
+        top_layout.addWidget(self.search_input)
 
+        # [新增] 刷新按钮
+        btn_refresh = QPushButton("🔄 刷新")
+        btn_refresh.setFixedWidth(60)
+        btn_refresh.clicked.connect(self.manual_refresh)
+        top_layout.addWidget(btn_refresh)
+
+        layout.addLayout(top_layout)
+
+        # 列表
         self.list_widget = QListWidget()
-        self.populate_list(self.books)
         self.list_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
         layout.addWidget(self.list_widget)
+
         self.setLayout(layout)
+
+    def manual_refresh(self):
+        self.setWindowTitle("📚 书架 (加载中...)")
+        # 调用主窗口的方法去获取数据
+        self.main_window.fetch_bookshelf_silent()
+
+    def update_data(self, books):
+        """当主窗口数据更新时被调用"""
+        self.setWindowTitle(f"📚 书架 (共 {len(books)} 本)")
+        # 如果正在搜索，保持搜索结果；否则显示全部
+        current_search = self.search_input.text()
+        if current_search:
+            self.filter_books(current_search)
+        else:
+            self.populate_list(books)
 
     def populate_list(self, books_to_show):
         self.list_widget.clear()
+        if not books_to_show:
+            return
+
         for book in books_to_show:
             display_text = f"{book['name']} - {book['author']}"
             item = QListWidgetItem(display_text)
@@ -76,7 +109,7 @@ class BookSelector(QDialog):
     def filter_books(self, text):
         text = text.lower()
         filtered = []
-        for book in self.books:
+        for book in self.main_window.books:
             if text in book['name'].lower() or text in book['author'].lower():
                 filtered.append(book)
         self.populate_list(filtered)
@@ -120,12 +153,14 @@ class TocSelector(QDialog):
         self.ip = ip
         self.book_url = book_url
         self.selected_index = None
+        self.main_window = parent
+        self.target_index = current_index
+        self.loader = None
         self.setStyleSheet(DARK_STYLESHEET)
 
         self.initUI()
 
-        # 如果主程序已经有缓存，直接用，不用再请求网络
-        if cached_toc:
+        if cached_toc and len(cached_toc) > 0:
             self.on_loaded(cached_toc)
         else:
             self.loader = ChapterLoader(ip, book_url)
@@ -133,11 +168,10 @@ class TocSelector(QDialog):
             self.loader.failed.connect(self.on_failed)
             self.loader.start()
 
-        self.target_index = current_index
-
     def initUI(self):
         layout = QVBoxLayout()
         self.status_label = QLabel("正在从手机获取目录...")
+        self.status_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.status_label)
 
         self.list_widget = QListWidget()
@@ -147,21 +181,26 @@ class TocSelector(QDialog):
         self.setLayout(layout)
 
     def on_loaded(self, chapters):
-        self.setWindowTitle(f"📖 目录 (共 {len(chapters)} 章)")
-        self.status_label.hide()
-        self.list_widget.show()
+        try:
+            self.setWindowTitle(f"📖 目录 (共 {len(chapters)} 章)")
+            self.status_label.hide()
+            self.list_widget.show()
 
-        # 将目录回传给主窗口缓存，方便同步标题使用
-        if self.parent():
-            self.parent().current_toc = chapters
+            if self.main_window:
+                self.main_window.current_toc = chapters
 
-        for i, chapter in enumerate(chapters):
-            item = QListWidgetItem(chapter['title'])
-            item.setData(Qt.UserRole, chapter['index'])
-            self.list_widget.addItem(item)
-            if i == self.target_index:
-                item.setSelected(True)
-                self.list_widget.scrollToItem(item, QListWidget.PositionAtCenter)
+            for i, chapter in enumerate(chapters):
+                title = str(chapter.get('title', f'第 {i + 1} 章'))
+                item = QListWidgetItem(title)
+                idx = chapter.get('index', i)
+                item.setData(Qt.UserRole, idx)
+                self.list_widget.addItem(item)
+                if i == self.target_index:
+                    item.setSelected(True)
+                    self.list_widget.scrollToItem(item, QListWidget.PositionAtCenter)
+        except Exception as e:
+            self.status_label.setText(f"数据解析错误: {str(e)}")
+            self.status_label.show()
 
     def on_failed(self, msg):
         self.status_label.setText(f"目录加载失败: {msg}")
@@ -169,6 +208,12 @@ class TocSelector(QDialog):
     def on_item_double_clicked(self, item):
         self.selected_index = item.data(Qt.UserRole)
         self.accept()
+
+    def closeEvent(self, event):
+        if self.loader and self.loader.isRunning():
+            self.loader.terminate()
+            self.loader.wait()
+        super().closeEvent(event)
 
 
 # ================= 设置窗口 =================
@@ -207,7 +252,7 @@ class SettingsDialog(QDialog):
         layout.addRow(self.check_ghost_mode)
         self.boss_key_input = QLineEdit(self.config.get("boss_key", "Esc"))
         layout.addRow("全局老板键:", self.boss_key_input)
-        hint_label = QPushButton("⚠️ 已启用完整字段同步 (包含标题)")
+        hint_label = QPushButton("⚠️ IP设置后重启生效更佳")
         hint_label.setFlat(True)
         hint_label.setStyleSheet("color: gray; text-align: left; border: none;")
         layout.addRow(hint_label)
@@ -243,6 +288,8 @@ class SettingsDialog(QDialog):
 class StealthReader(QWidget):
     update_text_signal = pyqtSignal(str)
     hotkey_signal = pyqtSignal()
+    # [新增] 书架数据更新的信号
+    bookshelf_updated_signal = pyqtSignal(list)
 
     def __init__(self):
         super().__init__()
@@ -251,7 +298,6 @@ class StealthReader(QWidget):
         self.books = []
         self.current_book = None
         self.current_chapter_index = 0
-        # 缓存目录列表，用于查找章节标题
         self.current_toc = []
 
         self.is_mouse_in = False
@@ -261,18 +307,24 @@ class StealthReader(QWidget):
         self.last_toggle_time = 0
         self.local_shortcut = None
 
+        # 记录当前打开的书架窗口实例
+        self.book_selector_dialog = None
+
         self.initUI()
         self.initTray()
 
         self.update_text_signal.connect(self.on_update_text_safe)
         self.hotkey_signal.connect(self.toggle_window)
+        # 连接书架更新信号到处理槽
+        self.bookshelf_updated_signal.connect(self.on_bookshelf_updated)
 
         self.refresh_hotkeys()
 
-        if "192.168" in self.config["ip"]:
+        # [修复] 只要IP不为空且以http开头，就尝试连接，不再限制 192.168
+        if self.config["ip"] and self.config["ip"].startswith("http"):
             self.fetch_bookshelf_silent()
 
-        self.update_text_signal.emit("初始化完成。\n右键可使用高级书架和目录。\n支持章节标题同步。")
+        self.update_text_signal.emit("初始化完成。\n右键可打开【书架】。\n已移除启动IP限制。")
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -298,6 +350,13 @@ class StealthReader(QWidget):
         self.text_edit.setPlainText(text)
         if "加载" not in text and "连接" not in text and "失败" not in text:
             self.text_edit.verticalScrollBar().setValue(0)
+
+    def on_bookshelf_updated(self, books):
+        """当书架数据拉取成功，更新内存并通知书架窗口"""
+        self.books = books
+        # 如果书架窗口是打开的，通知它更新
+        if self.book_selector_dialog and self.book_selector_dialog.isVisible():
+            self.book_selector_dialog.update_data(books)
 
     def refresh_hotkeys(self):
         hotkey_str = self.config.get("boss_key", "Esc")
@@ -424,11 +483,11 @@ class StealthReader(QWidget):
             res = requests.get(url, timeout=3)
             if res.status_code == 200:
                 data = res.json()
-                self.books = data.get("data", [])
+                # 成功后，通过信号发送数据回主线程
+                self.bookshelf_updated_signal.emit(data.get("data", []))
         except:
             pass
 
-    # 后台拉取目录（用于同步标题，不显示UI）
     def fetch_toc_silent(self, book_url):
         threading.Thread(target=self._fetch_toc_thread, args=(book_url,), daemon=True).start()
 
@@ -440,25 +499,35 @@ class StealthReader(QWidget):
                 data = res.json()
                 if data['isSuccess']:
                     self.current_toc = data['data']
-                    print(f"目录已缓存: {len(self.current_toc)} 章")
         except:
             pass
 
     def open_book_selector(self):
+        # 每次打开都尝试刷新一下
         self.fetch_bookshelf_silent()
-        selector = BookSelector(self.books, self)
+
+        # 使用 self.book_selector_dialog 保持引用
+        self.book_selector_dialog = BookSelector(self, self)
+
+        # 临时恢复透明度，防止看不见
         self.setWindowOpacity(self.config["opacity"])
-        if selector.exec_() == QDialog.Accepted:
-            if selector.selected_book:
-                self.load_book(selector.selected_book)
+
+        if self.book_selector_dialog.exec_() == QDialog.Accepted:
+            if self.book_selector_dialog.selected_book:
+                self.load_book(self.book_selector_dialog.selected_book)
+
+        self.book_selector_dialog = None  # 关闭后释放引用
 
     def open_toc_selector(self):
         if not self.current_book:
             self.update_text_signal.emit("请先选择一本书！")
             return
 
+        if not hasattr(self, 'current_toc') or self.current_toc is None:
+            self.current_toc = []
+
         self.setWindowOpacity(self.config["opacity"])
-        # 传入已缓存的目录，避免二次加载
+
         toc = TocSelector(self.config['ip'], self.current_book['bookUrl'],
                           self.current_chapter_index, self.current_toc, self)
 
@@ -471,12 +540,9 @@ class StealthReader(QWidget):
     def load_book(self, book):
         self.current_book = book
         self.current_chapter_index = book.get('durChapterIndex', 0)
-        self.current_toc = []  # 换书时清空目录缓存
+        self.current_toc = []
         self.update_text_signal.emit(f"打开: {book['name']}")
-
-        # 1. 获取内容
         self.fetch_chapter_content(book['bookUrl'], self.current_chapter_index)
-        # 2. 静默拉取目录 (为了同步标题)
         self.fetch_toc_silent(book['bookUrl'])
 
     def fetch_chapter_content(self, book_url, chapter_index):
@@ -509,7 +575,6 @@ class StealthReader(QWidget):
 
     def _sync_task(self):
         try:
-            # 尝试从缓存的目录中获取标题
             title = ""
             if self.current_toc and 0 <= self.current_chapter_index < len(self.current_toc):
                 title = self.current_toc[self.current_chapter_index].get("title", "")
@@ -520,15 +585,11 @@ class StealthReader(QWidget):
                 "durChapterIndex": self.current_chapter_index,
                 "durChapterPos": 0,
                 "durChapterTime": int(time.time() * 1000),
-                "durChapterTitle": title  # 填入真实标题
+                "durChapterTitle": title
             }
             url = f"{self.config['ip']}/saveBookProgress"
             res = requests.post(url, json=data, timeout=3)
-
-            # 调试日志
-            status = "成功" if res.status_code == 200 else f"失败({res.status_code})"
-            print(f"[同步{status}] Idx:{self.current_chapter_index} Title:{title}")
-
+            # print(f"同步: {res.status_code}")
         except:
             pass
 
