@@ -87,6 +87,7 @@ class BookSelector(QDialog):
 
 
 # ================= 独立窗口：目录选择器 =================
+# ================= 独立窗口：目录选择器 (修复版) =================
 class ChapterLoader(QThread):
     loaded = pyqtSignal(list)
     failed = pyqtSignal(str)
@@ -120,12 +121,17 @@ class TocSelector(QDialog):
         self.ip = ip
         self.book_url = book_url
         self.selected_index = None
+        # [修复] 显式保存父窗口引用，比 self.parent() 更安全
+        self.main_window = parent
+        self.target_index = current_index
+        self.loader = None
+
         self.setStyleSheet(DARK_STYLESHEET)
 
         self.initUI()
 
-        # 如果主程序已经有缓存，直接用，不用再请求网络
-        if cached_toc:
+        # 如果主程序已经有缓存，直接用
+        if cached_toc and len(cached_toc) > 0:
             self.on_loaded(cached_toc)
         else:
             self.loader = ChapterLoader(ip, book_url)
@@ -133,11 +139,10 @@ class TocSelector(QDialog):
             self.loader.failed.connect(self.on_failed)
             self.loader.start()
 
-        self.target_index = current_index
-
     def initUI(self):
         layout = QVBoxLayout()
         self.status_label = QLabel("正在从手机获取目录...")
+        self.status_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.status_label)
 
         self.list_widget = QListWidget()
@@ -147,21 +152,36 @@ class TocSelector(QDialog):
         self.setLayout(layout)
 
     def on_loaded(self, chapters):
-        self.setWindowTitle(f"📖 目录 (共 {len(chapters)} 章)")
-        self.status_label.hide()
-        self.list_widget.show()
+        # [关键修复] 增加异常捕获，防止数据格式错误导致 0xC0000409 崩溃
+        try:
+            self.setWindowTitle(f"📖 目录 (共 {len(chapters)} 章)")
+            self.status_label.hide()
+            self.list_widget.show()
 
-        # 将目录回传给主窗口缓存，方便同步标题使用
-        if self.parent():
-            self.parent().current_toc = chapters
+            # 回传缓存
+            if self.main_window:
+                self.main_window.current_toc = chapters
 
-        for i, chapter in enumerate(chapters):
-            item = QListWidgetItem(chapter['title'])
-            item.setData(Qt.UserRole, chapter['index'])
-            self.list_widget.addItem(item)
-            if i == self.target_index:
-                item.setSelected(True)
-                self.list_widget.scrollToItem(item, QListWidget.PositionAtCenter)
+            for i, chapter in enumerate(chapters):
+                # [关键修复] 强制转为字符串，防止 title 为 None 导致崩溃
+                title = str(chapter.get('title', f'第 {i + 1} 章'))
+                item = QListWidgetItem(title)
+
+                # 获取 index，如果没有则使用循环索引
+                idx = chapter.get('index', i)
+                item.setData(Qt.UserRole, idx)
+
+                self.list_widget.addItem(item)
+
+                # 高亮当前章节
+                if i == self.target_index:
+                    item.setSelected(True)
+                    self.list_widget.scrollToItem(item, QListWidget.PositionAtCenter)
+
+        except Exception as e:
+            print(f"目录渲染错误: {e}")
+            self.status_label.setText(f"数据解析错误: {str(e)}")
+            self.status_label.show()
 
     def on_failed(self, msg):
         self.status_label.setText(f"目录加载失败: {msg}")
@@ -170,6 +190,12 @@ class TocSelector(QDialog):
         self.selected_index = item.data(Qt.UserRole)
         self.accept()
 
+    def closeEvent(self, event):
+        # [修复] 窗口关闭时确保线程安全退出
+        if self.loader and self.loader.isRunning():
+            self.loader.terminate()
+            self.loader.wait()
+        super().closeEvent(event)
 
 # ================= 设置窗口 =================
 class SettingsDialog(QDialog):
@@ -456,6 +482,10 @@ class StealthReader(QWidget):
         if not self.current_book:
             self.update_text_signal.emit("请先选择一本书！")
             return
+
+        # 确保 current_toc 至少是一个列表，防止传 None 进去
+        if not hasattr(self, 'current_toc') or self.current_toc is None:
+            self.current_toc = []
 
         self.setWindowOpacity(self.config["opacity"])
         # 传入已缓存的目录，避免二次加载
