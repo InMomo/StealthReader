@@ -46,12 +46,12 @@ DARK_STYLESHEET = """
 """
 
 
-# ================= 辅助类：绘制角标的 Frame =================
+# ================= 辅助类：只负责画角标 =================
 class CornerFrame(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.draw_corners = False
-        self.corner_color = QColor(128, 128, 128, 200)
+        self.corner_color = QColor(128, 128, 128, 180)  # 灰色角标
 
     def set_draw_corners(self, enable):
         self.draw_corners = enable
@@ -59,6 +59,7 @@ class CornerFrame(QFrame):
 
     def paintEvent(self, event):
         super().paintEvent(event)
+        # 只在需要时绘制四个角的标记，背景色完全交给 Stylesheet 处理
         if self.draw_corners:
             painter = QPainter(self)
             painter.setRenderHint(QPainter.Antialiasing)
@@ -261,7 +262,6 @@ class SettingsDialog(QDialog):
         self.check_auto_mode.toggled.connect(self.on_auto_mode_toggled)
         layout.addRow(self.check_auto_mode)
 
-        # 这个滑块在自动挡下控制文字透明度，手动挡下控制窗口整体透明度
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(10, 100)
         self.opacity_slider.setValue(int(self.config.get("opacity") * 100))
@@ -272,10 +272,10 @@ class SettingsDialog(QDialog):
         self.font_spin.setValue(self.config.get("font_size"))
         layout.addRow("字体大小:", self.font_spin)
 
-        self.btn_text_color = QPushButton("文字颜色")
+        self.btn_text_color = QPushButton("文字颜色 (手动)")
         self.btn_text_color.setStyleSheet(f"background-color: {self.temp_text_color};")
         self.btn_text_color.clicked.connect(self.pick_text_color)
-        self.btn_bg_color = QPushButton("背景颜色")
+        self.btn_bg_color = QPushButton("背景颜色 (手动)")
         self.btn_bg_color.setStyleSheet(f"background-color: {self.temp_bg_color};")
         self.btn_bg_color.clicked.connect(self.pick_bg_color)
         layout.addRow(self.btn_text_color, self.btn_bg_color)
@@ -295,7 +295,6 @@ class SettingsDialog(QDialog):
         self.setLayout(layout)
 
     def on_auto_mode_toggled(self, checked):
-        # 自动挡：禁用手动颜色选择，但务必保留透明度滑块
         self.btn_bg_color.setEnabled(not checked)
         self.btn_text_color.setEnabled(not checked)
         self.opacity_slider.setEnabled(True)
@@ -473,13 +472,13 @@ class StealthReader(QWidget):
             self.hide()
         else:
             self.showNormal()
-            self.apply_style()  # 确保模式正确应用
+            self.apply_style()  # 重新应用样式
             self.activateWindow()
             if self.config.get("auto_mode", False):
                 self.chameleon_timer.start()
                 self.adjust_color_to_background()
 
-    # ================= 变色龙核心逻辑 (已修复) =================
+    # ================= 变色龙核心逻辑 =================
     def adjust_color_to_background(self):
         if not self.isVisible() or not self.config.get("auto_mode"):
             self.chameleon_timer.stop()
@@ -488,7 +487,7 @@ class StealthReader(QWidget):
         screen = QApplication.primaryScreen()
         if not screen: return
 
-        # 采样点：窗口左侧 5px 处 (避开窗口自己，采样真实背景)
+        # 采样点：窗口左侧 5px 处 (避开窗口自己)
         pick_x = self.x() - 5
         pick_y = self.y() + 10
 
@@ -502,12 +501,11 @@ class StealthReader(QWidget):
             color = img.pixelColor(0, 0)
             brightness = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
 
-            # 背景越亮，字体越黑；背景越暗，字体越白
+            # 亮背景->黑字，暗背景->白字
             base_text_color = (0, 0, 0) if brightness > 128 else (255, 255, 255)
 
-            # 获取用户设置的透明度 (0.1 ~ 1.0) 并应用到文字的 Alpha 通道
+            # [关键] 自动挡下，透明度滑块控制的是文字的 Alpha
             user_alpha = int(self.config.get("opacity", 0.9) * 255)
-
             rgba_color = f"rgba({base_text_color[0]}, {base_text_color[1]}, {base_text_color[2]}, {user_alpha})"
 
             self.text_edit.setStyleSheet(f"""
@@ -522,22 +520,27 @@ class StealthReader(QWidget):
 
         if self.config.get("auto_mode", False):
             # [自动挡]
-            # 1. 窗口整体不透明 (确保文字 Alpha 通道生效)
+            # 1. 窗口整体强制不透明 (确保文字不发虚)
             self.setWindowOpacity(1.0)
 
             # 2. 开启角标
             self.content_frame.set_draw_corners(True)
             self.chameleon_timer.start()
 
-            # 3. 背景锁定为 alpha=1 (肉眼不可见但能点击拖拽)
-            self.content_frame.setStyleSheet("""
-                CornerFrame {
-                    background-color: rgba(0, 0, 0, 5); 
+            # 3. [核心修改] 使用用户设置的背景色，但强制 Alpha=1
+            # 解析当前设置的背景色
+            bg_color = QColor(self.config['bg_color'])
+            # 构建一个几乎透明的背景色字符串 (Alpha=1)
+            clickable_transparent = f"rgba({bg_color.red()}, {bg_color.green()}, {bg_color.blue()}, 2)"
+
+            self.content_frame.setStyleSheet(f"""
+                CornerFrame {{
+                    background-color: {clickable_transparent}; 
                     border: none;
-                }
+                }}
             """)
 
-            # 4. 文字颜色由 adjust_color_to_background 接管
+            # 4. 立即触发变色
             self.adjust_color_to_background()
 
         else:
@@ -567,8 +570,7 @@ class StealthReader(QWidget):
     def enterEvent(self, event):
         self.is_mouse_in = True
         if self.config.get("ghost_mode", False):
-            # 幽灵模式移入：恢复当前模式的正常状态
-            self.apply_style()
+            self.apply_style()  # 恢复
         super().enterEvent(event)
 
     def leaveEvent(self, event):
@@ -579,8 +581,8 @@ class StealthReader(QWidget):
         if self.rect().contains(local_pos): return
 
         if self.config.get("ghost_mode", False):
-            # 幽灵模式移出：无论自动还是手动，整体变透明
-            self.setWindowOpacity(0.005)
+            # 幽灵模式移出：整体变透明
+            self.setWindowOpacity(0.01)
         super().leaveEvent(event)
 
     def fetch_bookshelf_silent(self):
@@ -614,6 +616,7 @@ class StealthReader(QWidget):
         self.fetch_bookshelf_silent()
         self.book_selector_dialog = BookSelector(self, self)
 
+        # 临时关闭自动模式样式
         was_auto = self.config.get("auto_mode")
         if was_auto:
             self.setWindowOpacity(0.95)
