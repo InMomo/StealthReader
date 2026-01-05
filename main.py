@@ -470,7 +470,7 @@ class StealthReader(QWidget):
         local_pos = self.mapFromGlobal(global_pos)
         if self.rect().contains(local_pos): return
         if self.config.get("ghost_mode", False):
-            self.setWindowOpacity(0.01)
+            self.setWindowOpacity(0.005)
         super().leaveEvent(event)
 
     # ================= 业务逻辑 =================
