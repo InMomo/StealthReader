@@ -10,9 +10,9 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QMenu,
                              QSpinBox, QPushButton, QSystemTrayIcon, QStyle,
                              QColorDialog, QCheckBox, QHBoxLayout,
                              QFrame, QTextEdit, QShortcut, QListWidget,
-                             QListWidgetItem, QLabel)
+                             QListWidgetItem, QLabel, QFontComboBox, QSizePolicy)
 from PyQt5.QtCore import Qt, QPoint, QRect, pyqtSignal, QObject, QThread, QTimer, QEvent
-from PyQt5.QtGui import QFont, QColor, QCursor, QKeySequence, QPainter, QPen
+from PyQt5.QtGui import QFont, QColor, QCursor, QKeySequence, QPainter, QPen, QFontMetrics
 
 # 启用高分屏支持
 QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -42,6 +42,8 @@ DARK_STYLESHEET = """
     QListWidget::item:hover { background-color: #3e3e3e; }
     QPushButton { background-color: #444; color: white; border: 1px solid #555; padding: 5px; border-radius: 4px; }
     QPushButton:hover { background-color: #555; }
+    QComboBox { background-color: #3c3c3c; color: white; border: 1px solid #555; padding: 5px; }
+    QComboBox QAbstractItemView { background-color: #3c3c3c; color: white; selection-background-color: #505050; }
     QLabel { color: #aaa; }
 """
 
@@ -76,14 +78,15 @@ class CornerFrame(QFrame):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), self.auto_bg_fill)
 
-        painter.setPen(QPen(self.corner_color, 3))
-        w, h = self.width(), self.height()
-        length = 15
-
-        painter.drawLine(0, 0, length, 0)
-        painter.drawLine(0, 0, 0, length)
-        painter.drawLine(w, h, w - length, h)
-        painter.drawLine(w, h, w, h - length)
+        # 只有当高度大于 20 像素时才画角标，避免单行模式下遮挡文字
+        if self.height() > 20:
+            painter.setPen(QPen(self.corner_color, 3))
+            w, h = self.width(), self.height()
+            length = 15
+            painter.drawLine(0, 0, length, 0)
+            painter.drawLine(0, 0, 0, length)
+            painter.drawLine(w, h, w - length, h)
+            painter.drawLine(w, h, w, h - length)
 
 
 # ================= 独立窗口：书籍选择器 =================
@@ -259,7 +262,7 @@ class SettingsDialog(QDialog):
         self.temp_bg_color = self.config.get("bg_color")
 
         self.setWindowTitle("设置")
-        self.resize(350, 480)
+        self.resize(350, 520)
         self.setStyleSheet(DARK_STYLESHEET)
         self.initUI()
 
@@ -278,12 +281,18 @@ class SettingsDialog(QDialog):
         self.opacity_slider.setRange(10, 100)
         self.opacity_slider.setValue(int(self.config.get("opacity") * 100))
         self.opacity_slider.valueChanged.connect(self.on_opacity_change)
-        layout.addRow("不透明度 (文字/整体):", self.opacity_slider)
+        layout.addRow("不透明度:", self.opacity_slider)
 
         self.font_spin = QSpinBox()
         self.font_spin.setRange(8, 60)
         self.font_spin.setValue(self.config.get("font_size"))
         layout.addRow("字体大小:", self.font_spin)
+
+        # 字体选择下拉框
+        self.font_combo = QFontComboBox()
+        current_font_family = self.config.get("font_family", "Microsoft YaHei")
+        self.font_combo.setCurrentFont(QFont(current_font_family))
+        layout.addRow("字体样式:", self.font_combo)
 
         self.btn_text_color = QPushButton("文字颜色 (手动)")
         self.btn_text_color.setStyleSheet(f"background-color: {self.temp_text_color};")
@@ -333,6 +342,7 @@ class SettingsDialog(QDialog):
     def accept(self):
         self.config["ip"] = self.ip_input.text().strip()
         self.config["font_size"] = self.font_spin.value()
+        self.config["font_family"] = self.font_combo.currentFont().family()
         self.config["boss_key"] = self.boss_key_input.text().strip()
         self.config["text_color"] = self.temp_text_color
         self.config["bg_color"] = self.temp_bg_color
@@ -349,7 +359,6 @@ class SettingsDialog(QDialog):
 
 # ================= 主程序 =================
 class StealthReader(QWidget):
-    # 【修改】信号增加参数: str(内容), bool(是否滚动到底部)
     update_text_signal = pyqtSignal(str, bool)
     hotkey_signal = pyqtSignal()
     bookshelf_updated_signal = pyqtSignal(list)
@@ -362,11 +371,12 @@ class StealthReader(QWidget):
         self.current_book = None
         self.current_chapter_index = 0
         self.current_toc = []
+        self.single_line_height = 20  # 默认最小高度
 
         self.is_mouse_in = False
         self.is_resizing = False
         self.is_moving = False
-        self.resize_margin = 20
+        self.resize_margin = 15
         self.last_toggle_time = 0
         self.local_shortcut = None
         self.book_selector_dialog = None
@@ -387,7 +397,7 @@ class StealthReader(QWidget):
         if self.config["ip"] and self.config["ip"].startswith("http"):
             self.fetch_bookshelf_silent()
 
-        self.update_text_signal.emit("初始化完成。\n自动挡模式下，背景将模拟屏幕色。", False)
+        self.update_text_signal.emit("初始化完成。\n拖动右下角调整大小。", False)
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -409,7 +419,6 @@ class StealthReader(QWidget):
         except Exception as e:
             print(f"Failed to save config: {e}")
 
-    # 【修改】支持根据信号参数滚动到底部或顶部
     def on_update_text_safe(self, text, is_bottom):
         self.text_edit.setPlainText(text)
         if "加载" in text or "连接" in text or "失败" in text:
@@ -451,12 +460,16 @@ class StealthReader(QWidget):
         self.setMouseTracking(True)
 
         self.main_layout = QVBoxLayout()
+        # 【关键】外层布局所有边距归零
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
 
         self.content_frame = CornerFrame()
         self.content_layout = QVBoxLayout(self.content_frame)
-        self.content_layout.setContentsMargins(10, 10, 10, 10)
+
+        # 【关键】内层边距压缩，只留左右一点缝隙
+        self.content_layout.setContentsMargins(5, 0, 5, 0)
+        self.content_layout.setSpacing(0)
 
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
@@ -465,7 +478,14 @@ class StealthReader(QWidget):
         self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.text_edit.setTextInteractionFlags(Qt.NoTextInteraction)
         self.text_edit.setFocusPolicy(Qt.NoFocus)
-        self.text_edit.installEventFilter(self)  # 安装事件过滤器
+
+        # 【核心修改 1】忽略建议高度，允许无限缩小
+        self.text_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+        # 【核心修改 2】去除文档内部留白
+        self.text_edit.setMinimumHeight(0)
+        self.text_edit.document().setDocumentMargin(0)
+
+        self.text_edit.installEventFilter(self)
 
         self.content_layout.addWidget(self.text_edit)
         self.main_layout.addWidget(self.content_frame)
@@ -479,17 +499,16 @@ class StealthReader(QWidget):
 
         self.apply_style()
 
-    # 事件过滤器：处理滚轮翻页
     def eventFilter(self, source, event):
         if source == self.text_edit and event.type() == QEvent.Wheel:
             scrollbar = self.text_edit.verticalScrollBar()
             delta = event.angleDelta().y()
 
-            if delta < 0:  # 向下滚动
+            if delta < 0:
                 if scrollbar.value() >= scrollbar.maximum() - 2:
                     self.next_chapter()
                     return True
-            elif delta > 0:  # 向上滚动
+            elif delta > 0:
                 if scrollbar.value() <= scrollbar.minimum() + 2:
                     self.prev_chapter()
                     return True
@@ -553,15 +572,26 @@ class StealthReader(QWidget):
             user_alpha = int(self.config.get("opacity", 0.9) * 255)
             rgba_color = f"rgba({base_text_color[0]}, {base_text_color[1]}, {base_text_color[2]}, {user_alpha})"
 
+            # 保持 padding 为 0
             self.text_edit.setStyleSheet(f"""
                 QTextEdit {{
                     color: {rgba_color};
                     background-color: transparent;
+                    padding: 0px; margin: 0px; border: none;
                 }}
             """)
 
     def apply_style(self):
-        self.text_edit.setFont(QFont(self.config['font_family'], self.config['font_size']))
+        font_family = self.config.get('font_family', 'Microsoft YaHei')
+        font = QFont(font_family, self.config['font_size'])
+        self.text_edit.setFont(font)
+
+        # 计算单行高度用于限制窗口最小尺寸
+        fm = QFontMetrics(font)
+        self.single_line_height = fm.lineSpacing()
+
+        # 强制 CSS 无填充
+        base_css = "padding: 0px; margin: 0px; border: none;"
 
         if self.config.get("auto_mode", False):
             self.setWindowOpacity(1.0)
@@ -587,6 +617,7 @@ class StealthReader(QWidget):
                 QTextEdit {{
                     color: {self.config['text_color']};
                     background-color: transparent;
+                    {base_css}
                 }}
             """
             self.text_edit.setStyleSheet(text_style)
@@ -616,6 +647,7 @@ class StealthReader(QWidget):
                     QTextEdit {{
                         color: transparent; 
                         background-color: {ghost_bg_style};
+                        padding: 0px; margin: 0px; border: none;
                     }}
                 """)
                 self.setWindowOpacity(1.0)
@@ -700,16 +732,13 @@ class StealthReader(QWidget):
         self.fetch_chapter_content(book['bookUrl'], self.current_chapter_index, False)
         self.fetch_toc_silent(book['bookUrl'])
 
-    # 【修改】增加 scroll_to_bottom 参数
     def fetch_chapter_content(self, book_url, chapter_index, scroll_to_bottom=False):
         t = threading.Thread(target=self._fetch_chapter_thread,
                              args=(book_url, chapter_index, scroll_to_bottom), daemon=True)
         t.start()
 
-    # 【修改】获取内容并拼接章节名
     def _fetch_chapter_thread(self, book_url, chapter_index, scroll_to_bottom):
         try:
-            # 获取章节标题
             chapter_title = ""
             if hasattr(self, 'current_toc') and self.current_toc:
                 if 0 <= chapter_index < len(self.current_toc):
@@ -731,7 +760,6 @@ class StealthReader(QWidget):
                 raw_content = data.get("data", "")
                 content = raw_content.replace("<br>", "\n").replace("&nbsp;", " ")
 
-                # 拼接标题
                 full_text = f"【 {chapter_title} 】\n\n{content}"
 
                 self.update_text_signal.emit(full_text, scroll_to_bottom)
@@ -798,7 +826,6 @@ class StealthReader(QWidget):
         if self.current_chapter_index > 0:
             self.current_chapter_index -= 1
             self.update_text_signal.emit("加载上一章...", False)
-            # 【关键】上一章 -> 去底部
             self.fetch_chapter_content(self.current_book['bookUrl'], self.current_chapter_index, True)
 
     def is_in_resize_area(self, pos):
@@ -827,7 +854,9 @@ class StealthReader(QWidget):
         if event.buttons() == Qt.LeftButton:
             if self.is_resizing:
                 new_w = max(event.pos().x(), 100)
-                new_h = max(event.pos().y(), 50)
+                # 【核心修改 3】动态计算最小高度，允许压扁
+                min_h = getattr(self, 'single_line_height', 20)
+                new_h = max(event.pos().y(), min_h)
                 self.resize(new_w, new_h)
             elif self.is_moving:
                 delta = QPoint(event.globalPos() - self.oldPos)
