@@ -6,12 +6,13 @@ import threading
 import time
 import keyboard
 import ctypes
+import traceback
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QMenu,
                              QAction, QDialog, QFormLayout, QLineEdit, QSlider,
                              QSpinBox, QPushButton, QSystemTrayIcon, QStyle,
                              QColorDialog, QCheckBox, QHBoxLayout,
                              QFrame, QTextEdit, QShortcut, QListWidget,
-                             QListWidgetItem, QLabel, QFontComboBox, QSizePolicy)
+                             QListWidgetItem, QLabel, QFontComboBox, QSizePolicy, QFileDialog)
 from PyQt5.QtCore import Qt, QPoint, QRect, pyqtSignal, QObject, QThread, QTimer, QEvent
 from PyQt5.QtGui import QFont, QColor, QCursor, QKeySequence, QPainter, QPen, QFontMetrics
 
@@ -33,7 +34,9 @@ DEFAULT_CONFIG = {
     "auto_mode": False,
     "antishot_mode": False,
     "window_width": 400,
-    "window_height": 300
+    "window_height": 300,
+    "last_local_file": "",
+    "last_local_pos": 0
 }
 
 DARK_STYLESHEET = """
@@ -52,9 +55,6 @@ DARK_STYLESHEET = """
 
 # ================= Windows 防截屏 API 封装 =================
 def set_window_protection(hwnd, enable=True):
-    """
-    设置窗口防截屏模式。
-    """
     try:
         user32 = ctypes.windll.user32
         WDA_NONE = 0x00000000
@@ -397,12 +397,22 @@ class StealthReader(QWidget):
         super().__init__()
         self.load_config()
         self.is_settings_open = False
+
+        # --- 网络书架数据 ---
         self.books = []
         self.current_book = None
         self.current_chapter_index = 0
         self.current_toc = []
-        self.single_line_height = 20
 
+        # --- 本地书籍数据 ---
+        self.is_local_mode = False  # 模式标记
+        self.local_full_text = ""  # 本地文件全文内容
+        self.local_start_index = 0  # 当前页起始字符在全文中的索引 (锚点)
+        self.local_page_history = []  # 记录翻页历史，用于"上一页"
+        self.local_file_path = ""  # 当前文件路径
+
+        # --- 界面控制 ---
+        self.single_line_height = 20
         self.is_mouse_in = False
         self.is_resizing = False
         self.is_moving = False
@@ -410,6 +420,7 @@ class StealthReader(QWidget):
         self.last_toggle_time = 0
         self.local_shortcut = None
         self.book_selector_dialog = None
+        self.oldPos = QPoint(0, 0)
 
         self.chameleon_timer = QTimer(self)
         self.chameleon_timer.setInterval(500)
@@ -424,13 +435,211 @@ class StealthReader(QWidget):
 
         self.refresh_hotkeys()
 
-        if self.config["ip"] and self.config["ip"].startswith("http"):
+        # 尝试恢复上次打开的本地文件
+        if self.config.get("last_local_file") and os.path.exists(self.config["last_local_file"]):
+            self.update_text_signal.emit("正在恢复上次阅读...", False)
+            QTimer.singleShot(500, self.restore_last_local_file)
+        elif self.config["ip"] and self.config["ip"].startswith("http"):
             self.fetch_bookshelf_silent()
-
-        self.update_text_signal.emit("初始化完成。\n防截屏已就绪 (截图时窗口会消失)。", False)
+            self.update_text_signal.emit("初始化完成。\n右键菜单可打开本地TXT文件。", False)
+        else:
+            self.update_text_signal.emit("欢迎使用。\n右键打开本地书籍或设置Legado。", False)
 
         if self.config.get("antishot_mode", False):
             QTimer.singleShot(100, lambda: set_window_protection(int(self.winId()), True))
+
+    def restore_last_local_file(self):
+        path = self.config["last_local_file"]
+        pos = self.config.get("last_local_pos", 0)
+        self.load_local_file(path, target_pos=pos)
+
+    # --- 打开本地文件 (防止 0xC0000409 崩溃) ---
+    def open_local_file_dialog(self):
+        options = QFileDialog.Options()
+        # 【关键】禁用 Windows 原生对话框，改用 Qt 内置对话框
+        options |= QFileDialog.DontUseNativeDialog
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择文本文件",
+            "",
+            "Text Files (*.txt);;All Files (*)",
+            options=options
+        )
+
+        if file_path:
+            # 检查是否是同一本书
+            last_file = self.config.get("last_local_file", "")
+
+            is_same_file = False
+            if last_file:
+                try:
+                    is_same_file = os.path.normpath(file_path) == os.path.normpath(last_file)
+                except:
+                    is_same_file = (file_path == last_file)
+
+            if is_same_file:
+                # 是同一本书：恢复上次进度
+                saved_pos = self.config.get("last_local_pos", 0)
+                self.load_local_file(file_path, target_pos=saved_pos)
+            else:
+                # 是新书：从头开始
+                self.load_local_file(file_path, target_pos=0)
+
+    def load_local_file(self, file_path, target_pos=0):
+        try:
+            content = ""
+            # 尝试多种编码读取
+            try:
+                with open(file_path, 'r', encoding='utf-8-sig') as f:
+                    content = f.read()
+            except UnicodeDecodeError:
+                try:
+                    with open(file_path, 'r', encoding='gb18030') as f:
+                        content = f.read()
+                except Exception as e:
+                    self.update_text_signal.emit(f"编码无法识别，请转为UTF-8或GBK", False)
+                    return
+
+            if not content:
+                self.update_text_signal.emit("文件为空", False)
+                return
+
+            self.is_local_mode = True
+            self.local_file_path = file_path
+            self.local_full_text = content
+
+            # 安全校验索引
+            safe_pos = min(max(0, target_pos), len(content) - 1)
+            self.local_start_index = safe_pos
+            self.local_page_history = []
+
+            # 【关键】加载时立即保存配置
+            self.config["last_local_file"] = file_path
+            self.config["last_local_pos"] = safe_pos
+            self.save_config()
+
+            self.render_local_page()
+
+            if safe_pos > 0:
+                self.update_text_signal.emit(f"已恢复进度: {os.path.basename(file_path)}", False)
+
+        except Exception as e:
+            traceback.print_exc()
+            self.update_text_signal.emit(f"打开文件失败: {str(e)}", False)
+
+    # --- 本地分页渲染算法 (锚点核心) ---
+    def render_local_page(self):
+        if not self.is_local_mode or not self.local_full_text:
+            return
+
+        # 截取缓冲区（保证填满屏幕，取5000字足以覆盖各种屏幕）
+        buffer_length = 5000
+        end_buffer = min(self.local_start_index + buffer_length, len(self.local_full_text))
+
+        display_text = self.local_full_text[self.local_start_index: end_buffer]
+
+        self.text_edit.setPlainText(display_text)
+
+        # 【关键】强制滚动条回顶，确保 local_start_index 对应的字符永远在第一行
+        self.text_edit.verticalScrollBar().setValue(0)
+
+    # --- 核心：基于几何坐标探测下一页起始位置 ---
+    def calc_next_page_start(self):
+        """利用视图几何坐标，探测屏幕底部边缘的字符位置"""
+        viewport_h = self.text_edit.viewport().height()
+        # 探测点：视图左下角再往下一点点 (取下一行的开头)
+        target_y = viewport_h + 2
+
+        cursor = self.text_edit.cursorForPosition(QPoint(0, target_y))
+        next_pos_in_buffer = cursor.position()
+
+        # 异常处理：如果一页装不满，cursor会指向文档末尾
+        if next_pos_in_buffer >= len(self.text_edit.toPlainText()):
+            return len(self.text_edit.toPlainText())
+
+        return next_pos_in_buffer
+
+    # --- 核心：基于反向排版探测上一页起始位置 ---
+    def calc_prev_page_start(self):
+        """通过加载前文并滚到底部，探测上一页的起始位置"""
+        if self.local_start_index == 0:
+            return 0
+
+        self.text_edit.setUpdatesEnabled(False)
+        try:
+            buffer_size = 5000
+            temp_start = max(0, self.local_start_index - buffer_size)
+            prev_content = self.local_full_text[temp_start: self.local_start_index]
+
+            self.text_edit.setPlainText(prev_content)
+
+            scrollbar = self.text_edit.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+
+            cursor = self.text_edit.cursorForPosition(QPoint(0, 0))
+            chars_in_prev_page = len(prev_content) - cursor.position()
+
+            real_prev_start = self.local_start_index - chars_in_prev_page
+
+            return max(0, real_prev_start)
+        finally:
+            self.text_edit.setUpdatesEnabled(True)
+
+    # --- 翻页逻辑 (即时存档 + 几何分页) ---
+    def scroll_page(self, direction):
+        if self.is_local_mode:
+            # --- 本地模式 ---
+            if direction > 0:  # 下一页
+                if self.local_start_index >= len(self.local_full_text):
+                    return
+
+                # 几何计算本页内容量
+                step = self.calc_next_page_start()
+                if step == 0 and self.local_start_index < len(self.local_full_text):
+                    step = 1
+
+                self.local_page_history.append(self.local_start_index)
+                self.local_start_index += step
+
+                if self.local_start_index > len(self.local_full_text):
+                    self.local_start_index = len(self.local_full_text)
+
+                self.render_local_page()
+
+            else:  # 上一页
+                if self.local_page_history:
+                    # 优先使用历史
+                    self.local_start_index = self.local_page_history.pop()
+                else:
+                    # 无历史时，反向排版计算
+                    self.local_start_index = self.calc_prev_page_start()
+
+                self.render_local_page()
+
+            # 【关键】即时存档
+            self.config["last_local_pos"] = self.local_start_index
+            self.save_config()
+
+        else:
+            # --- 网络模式 ---
+            scrollbar = self.text_edit.verticalScrollBar()
+            current_val = scrollbar.value()
+            max_val = scrollbar.maximum()
+            min_val = scrollbar.minimum()
+
+            target_val = current_val + (direction * (self.text_edit.viewport().height() - 30))
+
+            if direction > 0:
+                if current_val >= max_val - 5:
+                    self.next_chapter()
+                else:
+                    scrollbar.setValue(min(target_val, max_val))
+            else:
+                if current_val <= min_val + 5:
+                    self.prev_chapter()
+                else:
+                    scrollbar.setValue(max(target_val, min_val))
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -530,17 +739,23 @@ class StealthReader(QWidget):
 
     def eventFilter(self, source, event):
         if source == self.text_edit and event.type() == QEvent.Wheel:
-            scrollbar = self.text_edit.verticalScrollBar()
             delta = event.angleDelta().y()
-
-            if delta < 0:
-                if scrollbar.value() >= scrollbar.maximum() - 2:
-                    self.next_chapter()
-                    return True
-            elif delta > 0:
-                if scrollbar.value() <= scrollbar.minimum() + 2:
-                    self.prev_chapter()
-                    return True
+            if self.is_local_mode:
+                if delta < 0:
+                    self.scroll_page(1)
+                elif delta > 0:
+                    self.scroll_page(-1)
+                return True
+            else:
+                scrollbar = self.text_edit.verticalScrollBar()
+                if delta < 0:
+                    if scrollbar.value() >= scrollbar.maximum() - 2:
+                        self.next_chapter()
+                        return True
+                elif delta > 0:
+                    if scrollbar.value() <= scrollbar.minimum() + 2:
+                        self.prev_chapter()
+                        return True
         return super().eventFilter(source, event)
 
     def initTray(self):
@@ -617,7 +832,6 @@ class StealthReader(QWidget):
         font_size = self.config['font_size']
         font = QFont(font_family, font_size)
 
-        # 【关键修复】应用字体到控件
         self.text_edit.setFont(font)
 
         fm = QFontMetrics(font)
@@ -652,6 +866,10 @@ class StealthReader(QWidget):
                 }}
             """
             self.text_edit.setStyleSheet(text_style)
+
+            # 本地模式下修改样式需要重绘页面
+            if self.is_local_mode:
+                self.render_local_page()
 
     def enterEvent(self, event):
         self.is_mouse_in = True
@@ -756,6 +974,7 @@ class StealthReader(QWidget):
         self.apply_style()
 
     def load_book(self, book):
+        self.is_local_mode = False  # 切换回网络模式
         self.current_book = book
         self.current_chapter_index = book.get('durChapterIndex', 0)
         self.current_toc = []
@@ -801,7 +1020,7 @@ class StealthReader(QWidget):
             self.update_text_signal.emit(f"网络错误: {str(e)}", False)
 
     def sync_progress_async(self):
-        if not self.current_book: return
+        if not self.current_book or self.is_local_mode: return
         threading.Thread(target=self._sync_task, daemon=True).start()
 
     def _sync_task(self):
@@ -822,31 +1041,6 @@ class StealthReader(QWidget):
             requests.post(url, json=data, timeout=3)
         except:
             pass
-
-    def scroll_page(self, direction):
-        scrollbar = self.text_edit.verticalScrollBar()
-        current_val = scrollbar.value()
-        max_val = scrollbar.maximum()
-        min_val = scrollbar.minimum()
-        page_step = self.text_edit.viewport().height()
-        overlap = 30
-        step = (page_step - overlap) * direction
-        target_val = current_val + step
-        tolerance = 5
-        if direction > 0:
-            if current_val >= max_val - tolerance:
-                self.next_chapter()
-            elif target_val >= max_val:
-                scrollbar.setValue(max_val)
-            else:
-                scrollbar.setValue(target_val)
-        else:
-            if current_val <= min_val + tolerance:
-                self.prev_chapter()
-            elif target_val <= min_val:
-                scrollbar.setValue(min_val)
-            else:
-                scrollbar.setValue(target_val)
 
     def next_chapter(self):
         self.current_chapter_index += 1
@@ -885,10 +1079,14 @@ class StealthReader(QWidget):
         if event.buttons() == Qt.LeftButton:
             if self.is_resizing:
                 new_w = max(event.pos().x(), 100)
-                # 动态计算最小高度，允许压扁
                 min_h = getattr(self, 'single_line_height', 20)
                 new_h = max(event.pos().y(), min_h)
                 self.resize(new_w, new_h)
+
+                # 【核心逻辑】调整大小时基于锚点重绘
+                if self.is_local_mode:
+                    self.render_local_page()
+
             elif self.is_moving:
                 delta = QPoint(event.globalPos() - self.oldPos)
                 self.move(self.x() + delta.x(), self.y() + delta.y())
@@ -901,11 +1099,14 @@ class StealthReader(QWidget):
         self.is_resizing = False
         self.is_moving = False
         self.setCursor(Qt.ArrowCursor)
+        self.save_config()
 
     def contextMenuEvent(self, event):
         cmenu = QMenu(self)
-        cmenu.addAction("📚 书架 (搜索)").triggered.connect(self.open_book_selector)
-        cmenu.addAction("📖 章节目录").triggered.connect(self.open_toc_selector)
+        cmenu.addAction("📂 打开本地 TXT").triggered.connect(self.open_local_file_dialog)
+        cmenu.addSeparator()
+        cmenu.addAction("📚 网络书架 (搜索)").triggered.connect(self.open_book_selector)
+        cmenu.addAction("📖 章节目录 (网络)").triggered.connect(self.open_toc_selector)
         cmenu.addSeparator()
         cmenu.addAction("⚙️ 设置").triggered.connect(self.open_settings)
         cmenu.addSeparator()
@@ -927,7 +1128,8 @@ class StealthReader(QWidget):
             self.save_config()
             self.apply_style()
             self.refresh_hotkeys()
-            self.fetch_bookshelf_silent()
+            if self.config["ip"].startswith("http"):
+                self.fetch_bookshelf_silent()
         else:
             self.apply_style()
 
@@ -944,9 +1146,17 @@ class StealthReader(QWidget):
 
     def closeEvent(self, event):
         self.sync_progress_async()
+        if self.is_local_mode:
+            self.config["last_local_pos"] = self.local_start_index
+            self.save_config()
         super().closeEvent(event)
 
     def quit_app(self):
+        # 退出前强制保存本地进度
+        if self.is_local_mode:
+            self.config["last_local_pos"] = self.local_start_index
+            self.save_config()
+
         keyboard.unhook_all()
         QApplication.instance().quit()
 
