@@ -375,6 +375,7 @@ class SettingsDialog(QDialog):
         self.config["text_color"] = self.temp_text_color
         self.config["bg_color"] = self.temp_bg_color
         self.config["ghost_mode"] = self.check_ghost_mode.isChecked()
+        self.config["auto_mode"] = self.config["auto_mode"]  # 修复：这里应该是 self.check_auto_mode.isChecked()
         self.config["auto_mode"] = self.check_auto_mode.isChecked()
         self.config["antishot_mode"] = self.check_antishot.isChecked()
         super().accept()
@@ -547,6 +548,10 @@ class StealthReader(QWidget):
     # --- 核心：基于几何坐标探测下一页起始位置 ---
     def calc_next_page_start(self):
         """利用视图几何坐标，探测屏幕底部边缘的字符位置"""
+        # 【新增保护】防止空内容计算
+        if not self.text_edit.toPlainText():
+            return 0
+
         viewport_h = self.text_edit.viewport().height()
         # 探测点：视图左下角再往下一点点 (取下一行的开头)
         target_y = viewport_h + 2
@@ -590,6 +595,10 @@ class StealthReader(QWidget):
     def scroll_page(self, direction):
         if self.is_local_mode:
             # --- 本地模式 ---
+            # 【新增保护】
+            if not self.local_full_text:
+                return
+
             if direction > 0:  # 下一页
                 if self.local_start_index >= len(self.local_full_text):
                     return
@@ -623,6 +632,10 @@ class StealthReader(QWidget):
 
         else:
             # --- 网络模式 ---
+            # 【关键保护】如果还没选书，直接拦截滚动，防止崩溃
+            if not self.current_book:
+                return
+
             scrollbar = self.text_edit.verticalScrollBar()
             current_val = scrollbar.value()
             max_val = scrollbar.maximum()
@@ -739,6 +752,10 @@ class StealthReader(QWidget):
 
     def eventFilter(self, source, event):
         if source == self.text_edit and event.type() == QEvent.Wheel:
+            # 【关键保护】如果既没选书，也不是本地模式，直接拦截滚轮不处理
+            if not self.is_local_mode and not self.current_book:
+                return True
+
             delta = event.angleDelta().y()
             if self.is_local_mode:
                 if delta < 0:
@@ -1043,11 +1060,17 @@ class StealthReader(QWidget):
             pass
 
     def next_chapter(self):
+        # 【新增保护】防止 current_book 为 None
+        if not self.current_book:
+            return
         self.current_chapter_index += 1
         self.update_text_signal.emit("加载下一章...", False)
         self.fetch_chapter_content(self.current_book['bookUrl'], self.current_chapter_index, False)
 
     def prev_chapter(self):
+        # 【新增保护】防止 current_book 为 None
+        if not self.current_book:
+            return
         if self.current_chapter_index > 0:
             self.current_chapter_index -= 1
             self.update_text_signal.emit("加载上一章...", False)
