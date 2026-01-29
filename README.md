@@ -128,6 +128,33 @@
 
 3. **编码**：本地文件首选 `UTF-8`，虽然支持 GBK，但特殊符号可能显示异常。
 
+## 🎬 使用效果
+
+- **窗口隐身**：开启幽灵模式或变色龙模式后，窗口可与桌面环境完美融合，文字仿佛直接印在屏幕上，旁人难以察觉。
+  
+  ![](C:\Users\15067\Documents\Tools\reader\pic\变色龙.webp)
+  
+  ![](C:\Users\15067\Documents\Tools\reader\pic\变色龙2.webp)
+
+- **防截屏**：系统级防截屏功能确保在截图、录屏、会议共享时，阅读窗口内容不会被捕捉，极大提升安全性。
+  
+  ![](C:\Users\15067\Documents\Tools\reader\pic\防截屏.webp)
+
+## 🖱️ 菜单说明
+
+在窗口任意位置点击右键，即可打开功能菜单，包含以下常用操作：
+
+<img src="2026-01-29-11-17-50-image.png" title="" alt="" data-align="center">
+
+- **设置**：调整隐蔽模式、老板键、背景透明度等参数。
+  
+  <img src="2026-01-29-11-18-19-image.png" title="" alt="" data-align="center">
+- 
+- **打开本地文件**：快速加载本地 TXT 文件进行阅读。
+- **网络书架**：同步手机端 Legado 书架，实现多端进度同步。
+
+右键菜单设计简洁直观，方便随时切换功能，无需离开当前窗口，极大提升了使用效率和隐蔽性。
+
 ---
 
 > **Disclaimer**: 本软件仅供学习交流 PyQt5 界面开发技术使用。请合理安排工作时间，Work-Life Balance。
@@ -138,7 +165,7 @@
 
 如果你想自己生成 exe 文件，请使用 PyInstaller：  
 
-```bash  
+```bash
 # 普通打包
 
 pyinstaller -F -w main.py
