@@ -144,13 +144,16 @@
 
 在窗口任意位置点击右键，即可打开功能菜单，包含以下常用操作：
 
-<img src="2026-01-29-11-17-50-image.png" title="" alt="" data-align="center">
+<img title="" src="file:///C:/Users/15067/Documents/Tools/reader/pic/2026-01-29-11-17-50-image.png" alt="" data-align="center">
 
 - **设置**：调整隐蔽模式、老板键、背景透明度等参数。
   
-  <img src="2026-01-29-11-18-19-image.png" title="" alt="" data-align="center">
+  <img title="" src="pic/2026-01-29-11-18-19-image.png" alt="" data-align="center">
+
 - 
+
 - **打开本地文件**：快速加载本地 TXT 文件进行阅读。
+
 - **网络书架**：同步手机端 Legado 书架，实现多端进度同步。
 
 右键菜单设计简洁直观，方便随时切换功能，无需离开当前窗口，极大提升了使用效率和隐蔽性。
