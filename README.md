@@ -132,19 +132,19 @@
 
 - **窗口隐身**：开启幽灵模式或变色龙模式后，窗口可与桌面环境完美融合，文字仿佛直接印在屏幕上，旁人难以察觉。
   
-  ![](C:\Users\15067\Documents\Tools\reader\pic\变色龙.webp)
+  ![](pic\变色龙.webp)
   
-  ![](C:\Users\15067\Documents\Tools\reader\pic\变色龙2.webp)
+  ![](reader\pic\变色龙2.webp)
 
 - **防截屏**：系统级防截屏功能确保在截图、录屏、会议共享时，阅读窗口内容不会被捕捉，极大提升安全性。
   
-  ![](C:\Users\15067\Documents\Tools\reader\pic\防截屏.webp)
+  ![](pic\防截屏.webp)
 
 ## 🖱️ 菜单说明
 
 在窗口任意位置点击右键，即可打开功能菜单，包含以下常用操作：
 
-<img title="" src="file:///C:/Users/15067/Documents/Tools/reader/pic/2026-01-29-11-17-50-image.png" alt="" data-align="center">
+<img title="" src="pic/2026-01-29-11-17-50-image.png" alt="" data-align="center">
 
 - **设置**：调整隐蔽模式、老板键、背景透明度等参数。
   
